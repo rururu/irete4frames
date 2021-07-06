@@ -577,10 +577,11 @@
   ;;(println [:RETRACT-FACT fid])
   (if-let [funarg (remove-fmem fid)]
     (let [ais (a-indices funarg)
-          amem (volatile! {})]
+          amem (volatile! {})
+          bds (aget iR BIDS)] 
       (vswap! (aget iR IDFACT) dissoc fid)
-      (retract-b fid (get @BIDS fid))
-      (vswap! (aget iR BIDS) dissoc fid)
+      (retract-b fid (get @bds fid))
+      (vswap! bds dissoc fid)
       (doseq [ai ais]
         (tree-rem funarg (second (aget (aget iR AMEM) ai)) ))
       (if TRACE
