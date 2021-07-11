@@ -25,6 +25,11 @@
 (def TRACE nil)
 (def TLONG nil)
 
+(defmacro dbg [x]
+  `(let [x# ~x]
+    (println "dbg:" '~x "=" x#)
+    x#))
+
 (defn vari? [x]
   "Is x variable? Transtime function"
   (and (symbol? x) (.startsWith (name x) "?")))
@@ -412,7 +417,7 @@
 
 (defn matched-ctx [[ffuar fid] [pfuar vrs func] ctx bi]
   "Match fact with pattern with respect to context"
-  ;;(println [:matched-ctx ffuar fid pfun pargs vrs func ctx bi])
+  ;;(println [:matched-ctx [ffuar fid] [pfuar vrs func] ctx bi])
   (let [fids (ctx :?fids)]
     (if (not (some #{fid} fids))
       (if-let [ctx2 (matched-context ffuar pfuar ctx)]
@@ -483,7 +488,7 @@
           (condp = eix
             'x (add-to-confset tail ml)
             'i (let [bmem (aget iR BMEM)]
-                 (aset bmem bi (concat ml bmem))
+                 (aset bmem bi (concat ml (aget bmem bi)))
                  (activate-b (inc bi) ml))) )) )))
 
 (defn entry-a-action [bi pattern b-mem new-fact]
@@ -520,7 +525,6 @@
 (defn activate-a
   "Activate alpha net cells for index list <ais>"
   [ais]
-  ;;(println [:ACTIVATE-A :AIS ais])
   (doseq [ai ais]
     (let [ablinks (aget (aget iR ABLINK) ai)
           bnms (map #(list % (aget (aget iR BNET) %) (aget (aget iR BMEM) %)) ablinks)
@@ -995,11 +999,16 @@
   "Set values of all necessary constants describing RETE and facts from the vector"
   (def iR image))
 
-
-(defn tst []
-  (def mab (read-string (slurp "examples/mab.clj")))
+(defn tst [path]
+  ;;(def TRACE true)
+  ;;(def TLONG true)
+  (def mab (read-string (slurp path)))
   (def fct (rest (nth mab 3)))
+  (def fun (rest (nth mab 2)))
   (def rls (rest (second mab)))
-  (def tmp (rest (first mab))))
+  (def tmp (rest (first mab)))
+  (create-rete-image tmp rls fct)
+  (run))
+  
 ;; The End
 
