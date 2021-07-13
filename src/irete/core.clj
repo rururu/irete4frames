@@ -323,6 +323,7 @@
 (defn create-rete [tset pset]
   "Creates RETE image from a production set and reset it"
   (def iR (object-array 18))
+  (aset iR STRATEGY 'DEPTH) ;; Default strategy. Alternative 'BREADTH
   (if TRACE (println "\n.... Creating TEMPLATES for Pset ....\n"))
   (aset iR  TEMPL
     (apply hash-map (mapcat #(list (first %) (templ-map (rest %))) tset)))
@@ -898,7 +899,7 @@
         
 (defn run-with-mode
   ([mode trff]
-  	;; (println [:RUN-WITH-MODE mode trff])
+  	;;(println [:RUN-WITH-MODE mode trff])
     (if (= (first (nth trff 3)) 'facts)
       (run-with-mode mode (butlast trff) (rest (last trff)))
       (println (str "Wrong file format file!"))))
@@ -985,11 +986,17 @@
   (doseq [fact (read-string (slurp-with-comments path))]
     (assert-frame fact)))
     
-(defn create-rete-image [temps rules facts]
-  "Creates RETE from templates and rules and set all necessary constants describing RETE and facts"
-  (create-rete temps (filter some? (map trans-rule rules)))
-  (aset iR FACTS (volatile! facts)))
-
+(defn create-rete-image
+  "Creates RETE from templates and rules and set all necessary constants describing RETE and facts (and funcs)"
+  ([temps rules facts]
+   (create-rete temps (filter some? (map trans-rule rules)))
+   (aset iR FACTS (volatile! facts)))
+  ([temps rules facts funcs]
+   (let [ons (ns-name *ns*)]
+    (eval (cons 'do funcs))
+    (in-ns ons)
+    (create-rete-image temps rules facts))))
+  
     
 (defn get-rete-image []
   "Returns a vector of all necessary constants describing RETE and facts"
@@ -999,16 +1006,19 @@
   "Set values of all necessary constants describing RETE and facts from the vector"
   (def iR image))
 
-(defn tst [path]
-  ;;(def TRACE true)
-  ;;(def TLONG true)
-  (def mab (read-string (slurp path)))
+(defn tst [path trace tlong step1]
+  (def TRACE trace)
+  (def TLONG tlong)
+  (def mab (read-string (slurp-with-comments path)))
   (def fct (rest (nth mab 3)))
   (def fun (rest (nth mab 2)))
   (def rls (rest (second mab)))
   (def tmp (rest (first mab)))
-  (create-rete-image tmp rls fct)
-  (run))
-  
+  (if (seq fun)
+    (create-rete-image tmp rls fct fun)
+    (create-rete-image tmp rls fct))
+  (if (not step1)
+    (run)))
+
 ;; The End
 
