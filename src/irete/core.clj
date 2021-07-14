@@ -69,7 +69,7 @@
   (let [itl (interleave slots (repeat :?))]
     (apply sorted-map itl)))
 
-(defn to-funarg [typ mp]
+(defn to-funarg [iR typ mp]
   ;;(println [:TO-FUNARG typ mp])
   (cons typ (vals (merge ((aget iR TEMPL) typ) mp))))
 
@@ -112,14 +112,14 @@
     (butlast condition)
     condition))
 
-(defn mk-funarg [frame]
+(defn mk-funarg [iR frame]
   "Create Funarg (list of type and odered by TEMPL slot values)
    from frame (list of type and keys with values)"
   (let [[typ & rst] frame
         mp (apply hash-map rst)]
-    (to-funarg typ mp)))
+    (to-funarg iR typ mp)))
 
-(defn to-typmap [[typ & vls]]
+(defn to-typmap [iR [typ & vls]]
   "Create Typmap (list of type and map of slots) from funarg"
   (let [kk (keys ((aget iR TEMPL) typ))
         kv (interleave kk vls)
@@ -130,7 +130,7 @@
   "Reduces all different variables to '?"
   (map #(if (vari? %) :? %) cond))
 
-(defn slot-in-templ [pair typ]
+(defn slot-in-templ [iR pair typ]
   "For pair of slot and value checks if slot is in template of typ.
    If so returns pair of slot and value else nil"
   ;;(println [:SLOT-IN-TEMPL pair typ])
@@ -140,34 +140,33 @@
       pair
       (println (str "Slot " slot " is not in template " typ "!")))))
 
-(defn add-anet-entry [condition]
+(defn add-anet-entry [iR condition]
   "If condition in a left hand side of a rule is a pattern (not test with a function on the predicate place)
   adds a new entry to the map representing the alpha net."
   (let [cnd (if (= (first condition) 'not)
               (rest condition)
               condition)
         typ (first cnd)
-        cnd2 (cons typ (apply concat (filter #(slot-in-templ % typ) (partition 2 (rest cnd)))))
-        funarg (mk-funarg (univars (template cnd2)))
+        cnd2 (cons typ (apply concat (filter #(slot-in-templ iR % typ) (partition 2 (rest cnd)))))
+        funarg (mk-funarg iR (univars (template cnd2)))
         anet (aget iR ANET)
         acnt (aget iR ACNT)]
     (when (nil? (tree-get funarg anet))
       (tree-put funarg @acnt anet)
       (vswap! acnt inc))))
 
-(defn anet-for-pset
+(defn anet-for-pset [iR pset]
   "Build the alpha net for the given production set (rule set) <pset> as a map"
-  [pset]
   (doseq [pp pset]
     (if TRACE (println (str "\n" [:PRODUCTION pp])))
     (doseq [condition (lhs pp)]
       (if (and TRACE TLONG) (println [:condition condition]))
-      (add-anet-entry condition)) ))
+      (add-anet-entry iR condition)) ))
 
-(defn a-indexof-pattern [pattern]
+(defn a-indexof-pattern [iR pattern]
   "Find an alpha memory cell index for a pattern from a left hand side of some rule"
   ;;(println [:A-INDEXOF-PATTERN :PATTERN pattern])
-  (let [funarg (mk-funarg (univars pattern))]
+  (let [funarg (mk-funarg iR (univars pattern))]
     (tree-get funarg (aget iR ANET))))
 
 (defn collect-vars
@@ -219,11 +218,11 @@
       (keyword e)
       e)))
 
-(defn mk-pattern-and-test [condition]
+(defn mk-pattern-and-test [iR condition]
   "Make pattern or test"
   ;;(println [:MK-PATTERN-AND-TEST condition])
   (if (= (first condition) 'not)
-    (let [[apid patt] (mk-pattern-and-test (rest condition))]
+    (let [[apid patt] (mk-pattern-and-test iR (rest condition))]
       [apid (cons 'not patt)])
     (let [[frame test]
             (if (even? (count condition))
@@ -235,8 +234,8 @@
                   [vks (mk-test-func test vrs)])
                 [nil nil])
           frame (map var-to-key frame)
-          patt (cons (mk-funarg frame) rst)
-          apid (a-indexof-pattern (template condition))]
+          patt (cons (mk-funarg iR frame) rst)
+          apid (a-indexof-pattern iR (template condition))]
         (list apid patt))))
 
 (defn enl [lst]
@@ -258,17 +257,18 @@
    The plan is the list of lists each of which represents one cell of the beta memory.
    First element of each list is an index of the beta memory, rest of each list is a content of the corresponding cell.
    Recalculate salience into positive for using as CFARR index"
-  ([pset]
+  ([iR pset]
     (enl (mapcat
            #(beta-net-plan
+             iR
              (prod-name %)
              (- 0 (salience %))
              (lhs %)
              (rhs %))
            pset)))
-  ([pname sal lhs rhs]
+  ([iR pname sal lhs rhs]
     (if TRACE (println (str "\n" [:PRODUCTION pname])))
-    (let [pts (map mk-pattern-and-test lhs)
+    (let [pts (map mk-pattern-and-test iR lhs)
           fir (concat (first pts) [pname])
           mid (butlast (rest pts))
           vrs (collect-vars rhs)
@@ -322,48 +322,51 @@
 
 (defn create-rete [tset pset]
   "Creates RETE image from a production set and reset it"
-  (def iR (object-array 18))
-  (aset iR STRATEGY 'DEPTH) ;; Default strategy. Alternative 'BREADTH
-  (if TRACE (println "\n.... Creating TEMPLATES for Pset ....\n"))
-  (aset iR  TEMPL
-    (apply hash-map (mapcat #(list (first %) (templ-map (rest %))) tset)))
-  (if TRACE (println "\n.... Creating ANET PLAN for Pset ...."))
-  (aset iR  ANET (volatile! {}))
-  (aset iR ACNT (volatile! 0))
-  (anet-for-pset pset)
-  (when TRACE
-    (log-anp "alpha-net-plan.txt" @(aget iR ANET))
-    (println "\n.... Creating BNET PLAN for Pset ...."))
-  (aset iR MINSAL (apply min (map salience pset)))
-  (aset iR MAXSAL (apply max (map salience pset)))
-  (aset iR BPLAN (beta-net-plan pset))
-  (when TRACE
-    (log-lst "beta-net-plan.txt" (aget iR BPLAN))
-    (println "\n.... Creating BNET ANET LINK PLAN for Pset ....\n"))
-  (aset iR ABLINK (object-array @(aget iR ACNT)))
-  (aset iR BCNT (count (aget iR BPLAN)))
-  (aset iR BNET (object-array (aget iR BCNT)))
-  (fill-bnet (aget iR BNET) (aget iR BPLAN))
-  (fill-ablink (aget iR BPLAN) (aget iR ABLINK))
-  (when TRACE
-    (log-array "alpha-beta-links.txt" (aget iR ABLINK))
-    (println "\n.... Log Files Created ....\n"))
-  (reset)
-  (if TRACE (println "\n.... RETE Created and Reset ....\n"))
-  [@(aget iR ACNT) (aget iR BCNT)])
+  (let [iR (object-array 18)]
+    (aset iR STRATEGY 'DEPTH) ;; Default strategy. Alternative 'BREADTH
+    (if TRACE (println "\n.... Creating TEMPLATES for Pset ....\n"))
+    (aset iR  TEMPL
+      (apply hash-map (mapcat #(list (first %) (templ-map (rest %))) tset)))
+    (if TRACE (println "\n.... Creating ANET PLAN for Pset ...."))
+    (aset iR  ANET (volatile! {}))
+    (aset iR ACNT (volatile! 0))
+    (anet-for-pset iR pset)
+    (when TRACE
+      (log-anp "alpha-net-plan.txt" @(aget iR ANET))
+      (println "\n.... Creating BNET PLAN for Pset ...."))
+    (aset iR MINSAL (apply min (map salience pset)))
+    (aset iR MAXSAL (apply max (map salience pset)))
+    (aset iR BPLAN (beta-net-plan iR pset))
+    (when TRACE
+      (log-lst "beta-net-plan.txt" (aget iR BPLAN))
+      (println "\n.... Creating BNET ANET LINK PLAN for Pset ....\n"))
+    (aset iR ABLINK (object-array @(aget iR ACNT)))
+    (aset iR BCNT (count (aget iR BPLAN)))
+    (aset iR BNET (object-array (aget iR BCNT)))
+    (fill-bnet (aget iR BNET) (aget iR BPLAN))
+    (fill-ablink (aget iR BPLAN) (aget iR ABLINK))
+    (when TRACE
+      (log-array "alpha-beta-links.txt" (aget iR ABLINK))
+      (println "\n.... Log Files Created ....\n"))
+    (reset)
+    (if TRACE (println "\n.... RETE Created and Reset ....\n"))
+    iR))
 
-(defn reset []
+(defn reset
   "Reset: clear and initialize all memories"
-  (aset iR  AMEM (object-array @(aget iR ACNT)))
-  (dotimes [i (alength (aget iR AMEM))] (aset (aget iR AMEM) i [nil (volatile! {})]))
-  (aset iR BMEM (object-array (aget iR BCNT)))
-  (aset iR CFSET (volatile! (sorted-map)))
-  (aset iR IDFACT (volatile! {}))
-  (aset iR FMEM (volatile! {}))
-  (aset iR FCNT (volatile! 0))
-  (aset iR BIDS (volatile! {})))
-
-(defn mk-fact [funarg]
+  ([]
+   (reset iR))
+  ([img]
+   (aset img  AMEM (object-array @(aget img ACNT)))
+   (dotimes [i (alength (aget img AMEM))] (aset (aget img AMEM) i [nil (volatile! {})]))
+   (aset img BMEM (object-array (aget img BCNT)))
+   (aset img CFSET (volatile! (sorted-map)))
+   (aset img IDFACT (volatile! {}))
+   (aset img FMEM (volatile! {}))
+   (aset img FCNT (volatile! 0))
+   (aset img BIDS (volatile! {}))))
+  
+(defn mk-fact [iR funarg]
   "Make fact. Returns new fact [funarg id] id or nil if same fact exists"
   ;;(println [:MK-FACT funarg])
   (let [fmem (aget iR FMEM)]
@@ -379,7 +382,7 @@
   "Takes values from context map mp in order of list of variables"
   (map #(mp %) vrs))
 
-(defn try-func-add-fid [func fid ctx vrs bi]
+(defn try-func-add-fid [iR func fid ctx vrs bi]
   ;;(println [:TRY-FUNC-ADD-FID func fid ctx vrs bi])
   (if (or (nil? func) (apply func (var-vals ctx vrs)))
     (let [bds (aget iR BIDS)
@@ -416,30 +419,30 @@
       (if (match-fact-to-pattern fargs gargs)
         (merge ctx (ground-match gargs fargs {}))))))
 
-(defn matched-ctx [[ffuar fid] [pfuar vrs func] ctx bi]
+(defn matched-ctx [iR [ffuar fid] [pfuar vrs func] ctx bi]
   "Match fact with pattern with respect to context"
   ;;(println [:matched-ctx [ffuar fid] [pfuar vrs func] ctx bi])
   (let [fids (ctx :?fids)]
     (if (not (some #{fid} fids))
       (if-let [ctx2 (matched-context ffuar pfuar ctx)]
-        (try-func-add-fid func fid (assoc ctx2 :?fids (cons fid fids)) vrs bi)) ) ))
+        (try-func-add-fid iR func fid (assoc ctx2 :?fids (cons fid fids)) vrs bi)) ) ))
 
-(defn match-ctx-amem [amem [pfuar vrs func] ctx bi]
+(defn match-ctx-amem [iR amem [pfuar vrs func] ctx bi]
   "Match list of facts with pattern with respect to context and beta cell.
   Returns matching contexts"
   ;;(println [:MATCH-CTX-AMEM amem pfuar vrs func ctx bi])
   (if-let [mm (seq (tree-match pfuar @amem ctx))]
     (filter some?
             (for [[fid ctx2] mm]
-              (try-func-add-fid func fid ctx2 vrs bi)) ) ))
+              (try-func-add-fid iR func fid ctx2 vrs bi)) ) ))
 
-(defn mk-match-list [amem pattern ctx-list bi]
+(defn mk-match-list [iR amem pattern ctx-list bi]
   "Make match-list of contexts"
   ;;(println [:MK-MATCH-LIST amem pattern ctx-list bi])
   (if (not (empty? @amem))
-    (mapcat #(match-ctx-amem amem pattern % bi) ctx-list)))
+    (mapcat #(match-ctx-amem iR amem pattern % bi) ctx-list)))
 
-(defn averfid [ctx]
+(defn averfid [iR ctx]
   "Evaluation of activation assesment 'average fid' depending on strategy"
   (let [fids (ctx :?fids)
         sum (apply + fids)
@@ -448,14 +451,14 @@
       (- k)
       k)))
 
-(defn print-cfset []
+(defn print-cfset [iR]
   (doseq [[k v] (seq @(aget iR CFSET))]
     (println [k (map ffirst v)])))
 
-(defn add-to-confset [aprod match-list]
+(defn add-to-confset [iR aprod match-list]
   "Add activation to conflict set array"
   ;;(println [:ADD-TO-CONFSET (first aprod) (type (first aprod)) :ML (map #(get % :?fids) match-list)])
-  (let [new (map #(vector aprod %) (sort-by averfid match-list))
+  (let [new (map #(vector aprod %) (sort-by #(averfid iR %) match-list))
         sal (salience aprod)
         cfs (aget iR CFSET)
         old (get @cfs sal)
@@ -466,16 +469,16 @@
 
 (declare activate-b)
 
-(defn activate-b-not [bi amem eix pattern tail ctx-list]
+(defn activate-b-not [iR bi amem eix pattern tail ctx-list]
   "Activate beta net cell for not node
   Add to all contexts alpha memory cell and pattern to not match when activated"
   ;;(println [:ACTIVATE-B-NOT bi amem eix pattern tail bi (count ctx-list)])
   (let [ml (map #(assoc % :not-match (conj (or (:not-match %) []) [amem pattern])) ctx-list)]
     (condp = eix
-      'x (add-to-confset tail ml)
+      'x (add-to-confset iR tail ml)
       'i (activate-b (inc bi) ml))))
 
-(defn activate-b [bi ctx-list]
+(defn activate-b [iR bi ctx-list]
   "Activate beta net cell of index <bi> with respect to a list of contexts
   already activated by a new fact with an index <new-fid>"
   ;;(println [:ACTIVATE-B :BI bi :CTX-LIST ctx-list])
@@ -483,69 +486,68 @@
         [eix bal pattern & tail] bnode
         amem (aget iR AMEM)]
     (if (= (first pattern) 'not)
-      (activate-b-not bi (second (aget amem bal)) eix (rest pattern) tail ctx-list)
-      (let [ml (mk-match-list (second (aget amem bal)) pattern ctx-list bi)]
+      (activate-b-not iR bi (second (aget amem bal)) eix (rest pattern) tail ctx-list)
+      (let [ml (mk-match-list iR (second (aget amem bal)) pattern ctx-list bi)]
         (if (seq ml)
           (condp = eix
             'x (add-to-confset tail ml)
             'i (let [bmem (aget iR BMEM)]
                  (aset bmem bi (concat ml (aget bmem bi)))
-                 (activate-b (inc bi) ml))) )) )))
+                 (activate-b iR (inc bi) ml))) )) )))
 
-(defn entry-a-action [bi pattern b-mem new-fact]
+(defn entry-a-action [iR bi pattern b-mem new-fact]
   "Entry alpha activation"
   ;;(println [:ENTRY-A-ACTION :BI bi :PATTERN pattern :BMEM b-mem :NEW-FACT new-fact])
-  (when-let [ctx (matched-ctx new-fact pattern {} bi)]
+  (when-let [ctx (matched-ctx iR new-fact pattern {} bi)]
     (aset (aget iR BMEM) bi (cons ctx b-mem))
-    (activate-b (inc bi) (list ctx))))
+    (activate-b iR (inc bi) (list ctx))))
 
-(defn inter-a-action [bi pattern b-mem new-fact]
+(defn inter-a-action [iR bi pattern b-mem new-fact]
   "Intermediate alpha activation"
   ;;(println [:INTER-A-ACTION :BI bi :PATTERN pattern :BMEM b-mem :NEW-FACT new-fact])
   (let [bmem (aget iR BMEM)]
     (if-let [ctx-list (seq (aget bmem (dec bi)))]
-      (when-let [ml (seq (keep #(matched-ctx new-fact pattern % bi) ctx-list))]
+      (when-let [ml (seq (keep #(matched-ctx iR new-fact pattern % bi) ctx-list))]
         (aset bmem bi (concat ml b-mem))
-        (activate-b (inc bi) ml)))))
+        (activate-b iR (inc bi) ml)))))
 
-(defn exit-a-action [bi pattern tail b-mem new-fact]
+(defn exit-a-action [iR bi pattern tail b-mem new-fact]
   "Exit alpha activation"
   ;;(println [:EXIT-A-ACTION :BI bi :PATTERN pattern :TAIL tail :NEW-FACT new-fact])
   (let [bmem (aget iR BMEM)]
     (if-let [ctx-list (seq (aget bmem (dec bi)))]
-      (when-let [ml (seq (keep #(matched-ctx new-fact pattern % bi) ctx-list))]
+      (when-let [ml (seq (keep #(matched-ctx iR new-fact pattern % bi) ctx-list))]
         (aset bmem bi (concat ml b-mem))
         (add-to-confset tail ml)))))
 
-(defn enex-a-action [bi pattern tail new-fact]
+(defn enex-a-action [iR bi pattern tail new-fact]
   "Entry and exit alpha activation (for LHS with 1 pattern)"
   ;;(println [:ENEX-A-ACTION :PATTERN pattern :TAIL tail :NEW-FACT new-fact])
-  (if-let [ctx (matched-ctx new-fact pattern {} bi)]
+  (if-let [ctx (matched-ctx iR new-fact pattern {} bi)]
     (add-to-confset tail (list ctx)) ))
 
-(defn activate-a
+(defn activate-a [iR ais]
   "Activate alpha net cells for index list <ais>"
-  [ais]
   (doseq [ai ais]
     (let [ablinks (aget (aget iR ABLINK) ai)
           bnms (map #(list % (aget (aget iR BNET) %) (aget (aget iR BMEM) %)) ablinks)
           new-fact (first (aget (aget iR AMEM) ai))]
       (doseq [[bi [eix bal pattern & tail] b-mem] bnms]
         (condp = eix
-          'e (entry-a-action bi pattern b-mem new-fact)
-          'ex (enex-a-action bi pattern tail new-fact)
-          'i (inter-a-action bi pattern b-mem new-fact)
-          'x (exit-a-action bi pattern tail b-mem new-fact))) )))
+          'e (entry-a-action iR bi pattern b-mem new-fact)
+          'ex (enex-a-action iR bi pattern tail new-fact)
+          'i (inter-a-action iR bi pattern b-mem new-fact)
+          'x (exit-a-action iR bi pattern tail b-mem new-fact))) )))
 
 (defn a-indices
   "For an asserted funarg find all suitable alpha memory cells"
-  ([[fun & args]]
+  ([iR [fun & args]]
    (if-let [anet (@(aget iR ANET) fun)]
-     (a-indices args anet)))
-  ([args anet]
+     (a-indices iR args anet)))
+  ([iR args anet]
    (letfn [(path [args key anet]
                  (if (or (= key :?) (= key (first args)))
-                   (a-indices (rest args) (anet key))))]
+                   (a-indices iR (rest args) (anet key))))]
      (if (number? anet)
        [anet]
        (mapcat #(path args % anet) (keys anet))))))
@@ -555,7 +557,7 @@
   ;;(println [:REMOVE-CTX-WITH :FID fid :CTXLIST ctxlist])
   (doall (filter #(not (some #{fid} (:?fids %))) ctxlist)))
 
-(defn retract-b [fid bis]
+(defn retract-b [iR fid bis]
   "Retract fact id from the beta memory:
   from bi cell and down cells to end of rule"
   ;;(println [:RETRACT-B :FID fid :BIS bis])
@@ -569,7 +571,7 @@
               (if (or (= eix 'i) (= eix 'x))
                 (recur ni))) ))) )))
 
-(defn remove-fmem [fid]
+(defn remove-fmem [iR fid]
   "Remove fact from facts memory by fact id.
   Returns funarg of removed fact"
   (let [funarg (@(aget iR IDFACT) fid)]
@@ -577,33 +579,33 @@
       (tree-rem funarg (aget iR FMEM))
       funarg)))
 
-(defn retract-fact [fid]
+(defn retract-fact [iR fid]
   "Retract fact for given fact-id by removing it from alpha, beta and fact memory."
   ;;(println [:RETRACT-FACT fid])
-  (if-let [funarg (remove-fmem fid)]
-    (let [ais (a-indices funarg)
+  (if-let [funarg (remove-fmem iR fid)]
+    (let [ais (a-indices iR funarg)
           amem (volatile! {})
           bds (aget iR BIDS)] 
       (vswap! (aget iR IDFACT) dissoc fid)
-      (retract-b fid (get @bds fid))
+      (retract-b iR fid (get @bds fid))
       (vswap! bds dissoc fid)
       (doseq [ai ais]
         (tree-rem funarg (second (aget (aget iR AMEM) ai)) ))
       (if TRACE
         (if TLONG
-          (println [:<== :fid fid (to-typmap funarg)])
+          (println [:<== :fid fid (to-typmap iR funarg)])
           (print " <-" fid)))
       funarg)))
 
-(defn ais-for-funarg [funarg]
+(defn ais-for-funarg [iR funarg]
   "Create fact from funarg and add it to alpha memory.
    Returns list of activated alpha memory cells"
   ;;(println [:AIS-FOR-FUNARG funarg])
-  (if-let [fact (mk-fact funarg)]
-    (when-let [ais (a-indices funarg)]
+  (if-let [fact (mk-fact iR funarg)]
+    (when-let [ais (a-indices iR funarg)]
       (if TRACE
         (if TLONG
-          (println [:==> :fid (second fact) (to-typmap funarg)])
+          (println [:==> :fid (second fact) (to-typmap iR funarg)])
           (print " ->" (second fact))))
       (doseq [ai ais]
         (let [amm (aget iR AMEM)
@@ -612,25 +614,24 @@
           (aset amm ai [fact amem])))
       ais)))
 
-(defn assert-frame [frame]
+(defn assert-frame [iR frame]
   "Assert frame and activate corresponding alpha nodes"
   ;;(println [:ASSERT-FRAME frame])
-  (activate-a (ais-for-funarg (mk-funarg frame))))
+  (activate-a iR (ais-for-funarg iR (mk-funarg iR frame))))
 
-(defn modify-fact [fid mmp]
+(defn modify-fact [iR fid mmp]
   "Modify fact for given fact-id by retracting it and asserting, modified frame"
   ;;(println [:MODIFY-FACT fid mmp])
-  (if-let [funarg (retract-fact fid)]
-    (let [[typ mp] (to-typmap funarg)
+  (if-let [funarg (retract-fact iR fid)]
+    (let [[typ mp] (to-typmap iR funarg)
           mp2 (merge mp mmp)
-          ais (ais-for-funarg (to-funarg typ mp2))]
-      (activate-a ais))))
+          ais (ais-for-funarg iR (to-funarg iR typ mp2))]
+      (activate-a iR ais))))
 
-(defn assert-list
+(defn assert-list [iR lst]
   "Function for assertion a list of triples or object descriptions (see comments on the function 'asser').
    For the use outside of the right hand side of rules"
-  [lst]
-  (activate-a (set (mapcat ais-for-funarg lst))))
+  (activate-a iR (set (mapcat #(ais-for-funarg iR %) lst))))
 
 (defn not-match-ctx-amem [amem [pfuar vrs func] ctx]
   "If not match context alpha memory returns it with remembered what was not matched"
@@ -647,7 +648,7 @@
       (every? #(let [[amem pvf] %]
                  (not-match-ctx-amem @amem pvf ctx)) nm-lst)))
 
-(defn resolve-not-matched [acs]
+(defn resolve-not-matched [iR acs]
   "First activation with context that not extinct and
   has all not matched negative conditions"
   ;;(println [:RESOLVE-NOT-MATCHED (count acs)])
@@ -662,18 +663,18 @@
         (recur tail (conj head act)))
       [:no-activations])))
 
-(defn resolve-conf-set [cfset]
+(defn resolve-conf-set [iR cfset]
   "Resolve whole conflict set"
   (if (seq cfset)
     (let [[sal acs] (first cfset)
-          [rsv rst] (resolve-not-matched acs)]
+          [rsv rst] (resolve-not-matched iR acs)]
       (cond
         (= rsv :no-activations)
         (do (vswap! (aget iR CFSET) dissoc sal) nil)
         (seq rsv)
         (do (vswap! (aget iR CFSET) assoc sal rst) rsv)
         true
-        (resolve-conf-set (rest cfset))))))
+        (resolve-conf-set iR (rest cfset))))))
 
 (defn fire-resolved [[prod ctx]]
   "Fire resolved production with ctx"
@@ -688,72 +689,71 @@
 
 (defn fire
   "Fire!"
-  ([]
+  ([iR ]
    (while (not (every? empty? (vals @(aget iR CFSET))))
      (fire 1)))
-  ([n]
+  ([iR n]
     (dotimes [i n]
-      (if-let [reso (resolve-conf-set (seq @(aget iR CFSET)))]
+      (if-let [reso (resolve-conf-set iR (seq @(aget iR CFSET)))]
         (fire-resolved reso)))))
 
-(defn asser
+(defn asser [iR & args]
   "Function for the facts assertion that can be used in the right hand side of the rule.
    It has arbitrary number of arguments that as a whole represent a frame"
-  [& args]
-  (assert-frame args))
+  (assert-frame iR args))
 
-(defn retract [fids & indices]
+(defn retract [iR fids & indices]
   "Function for the facts retraction that can be used in the right hand side of the rule.
    Retract facts for indices of patterns in left hand side of rule"
   ;;(println [:RETRACT fids indices])
   (let [fids (reverse fids)]
     (doseq [idx indices]
-      (retract-fact (nth fids idx)))))
+      (retract-fact iR (nth fids idx)))))
 
-(defn modify [fids idx & svals]
+(defn modify [iR fids idx & svals]
   "Function for the fact modification that can be used in the right hand side of the rule.
    Modify fact for given index of pattern in left hand side of rule"
   ;;(println [:MODIFY fids idx svals])
   (let [fids (reverse fids)]
-    (modify-fact (nth fids idx) (apply hash-map svals))))
+    (modify-fact iR (nth fids idx) (apply hash-map svals))))
 
 (defn fact-id [fids & indices]
   "Function for getting fact id that can be used in the right hand side of the rule"
   (let [fids (reverse fids)]
     (int (nth fids (first indices)))))
 
-(defn problem-solved []
+(defn problem-solved [iR]
   "Function for clearing conflict set that can be used in the right hand side of the rule"
   (vreset! (aget iR CFSET) (sorted-map)))
 
-(defn frame-by-id [fid]
+(defn frame-by-id [iR fid]
   "Extracts frame for fact id from facts memory"
   (if-let [funarg (@(aget iR IDFACT) fid)]
-    (let [[typ mp] (to-typmap funarg)]
+    (let [[typ mp] (to-typmap iR funarg)]
       (cons typ (apply concat (seq mp))) )))
 
 (defn fact-list
   "List of facts (of some type)"
-  ([]
+  ([iR]
    (filter #(not= (second %) nil)
-           (for [i (range @(aget iR FCNT))](cons i (frame-by-id i)))))
-  ([typ]
-   (filter #(= (second %) typ) (fact-list))))
+           (for [i (range @(aget iR FCNT))](cons i (frame-by-id iR))))
+  ([iR typ]
+   (filter #(= (second %) typ) (fact-list iR))))
 
 (defn facts
   "Prints facts  (of some type)"
-  ([]
-   (let [fl (fact-list)]
+  ([iR]
+   (let [fl (fact-list iR)]
      (doall (map println fl))
      (count fl)))
-  ([typ]
-   (let [fl (fact-list typ)]
+  ([iR typ]
+   (let [fl (fact-list iR typ)]
      (doall (map println fl))
      (count fl))))
 
-(defn ppr [typ]
+(defn ppr [iR typ]
   "Pretty prints facts of type typ or all facts when typ = :all"
-  (let [all (fact-list)
+  (let [all (fact-list iR)
         sel (if (= typ :all) all (filter #(= (second %) typ) all))]
     (doseq [fact sel]
       (println)
@@ -790,8 +790,8 @@
         (cons '?fids
                (map #(mp %) (rest x)))))
 
-(defn trans-problem-solved []
-  '(irete.core/problem-solved))
+(defn trans-problem-solved [iR]
+  '(irete.core/problem-solved iR))
 
 (defn destruct [v]
   "Destructuring support: collect symbols inside vectors"
@@ -857,32 +857,31 @@
 
 (defn step
   "Step through facts in FACTS"
-  ([]
+  ([iR]
    (if (not (every? empty? (vals @(aget iR CFSET))))
-     (fire 1)
+     (fire iR 1)
      (let [facts (aget iR FACTS)]
       (if (seq @facts)
-       (do (assert-frame (first @facts))
+       (do (assert-frame iR (first @facts))
          (vswap! facts rest)
-         (fire 1))
+         (fire iR 1))
        (println "No facts!")))))
-  ([n]
+  ([iR n]
    (dotimes [i n]
-     (step))))
+     (step iR))))
 
 (defn run 
   "Run facts (assert all facts and fire)"
-  ([facts]
+  ([iR facts]
     (doseq [f facts]
-      (assert-frame f))
-    (fire)
+      (assert-frame iR f))
+    (fire iR)
     (if (and TRACE (not TLONG))
       (println)))
-  ([]
-    (run @(aget iR FACTS))))
+  ([iR]
+    (run iR @(aget iR FACTS))))
 
-(defn run-with
-  [mode temps rules facts]
+(defn run-with [iR mode temps rules facts]
   ;;(println [:RUN-WITH mode temps rules facts])
   (if (condp = mode
         "run" (do (untrace) true)
@@ -893,17 +892,17 @@
     (do (create-rete temps (filter some? (map trans-rule rules)))
       (condp = mode
         "step" (aset iR FACTS (volatile! facts))
-        "trace" (run facts)
-        "trace-long" (run facts)
-        "run" (time (run facts))) )))
+        "trace" (run iR facts)
+        "trace-long" (run iR facts)
+        "run" (time (run iR facts))) )))
         
 (defn run-with-mode
-  ([mode trff]
+  ([iR mode trff]
   	;;(println [:RUN-WITH-MODE mode trff])
     (if (= (first (nth trff 3)) 'facts)
       (run-with-mode mode (butlast trff) (rest (last trff)))
       (println (str "Wrong file format file!"))))
-  ([mode trufs facts]
+  ([iR mode trufs facts]
     (if (and (= (first (nth trufs 0)) 'templates)
              (= (first (nth trufs 1)) 'rules)
              (= (first (nth trufs 2)) 'functions))
@@ -913,7 +912,7 @@
             ons (ns-name *ns*)]
         (eval (cons 'do (rest (nth trufs 2))))
         (in-ns ons)
-        (run-with mode temps truls facts))
+        (run-with iR mode temps truls facts))
       (println (str "Wrong file format!")) ) ))
 
 (defn slurp-with-comments [f]
@@ -930,35 +929,34 @@
               (.append sb cc))
             (recur (.read r) is-comm)) ))) ))
 
-(defn app
+(defn app [iR & args]
   "rete application function"
-  [& args]
   (condp = (count args)
     3 (let [trufs (read-string (slurp-with-comments (nth args 1)))
 		    facts (read-string (slurp-with-comments (nth args 2)))]
-        (run-with-mode (first args) trufs facts))
-    2 (run-with-mode (first args) (read-string (slurp-with-comments (second args))))
+        (run-with-mode iR (first args) trufs facts))
+    2 (run-with-mode iR (first args) (read-string (slurp-with-comments (second args))))
     (println "Number of arguments: 2 or 3, see documentation!")))
 
-(defn strategy-depth []
+(defn strategy-depth [iR]
   "Set conflict resolution strategy to depth"
   (aset iR  STRATEGY 'DEPTH))
 
-(defn strategy-breadth []
+(defn strategy-breadth [iR]
   "Set conflict resolution strategy to breadth"
   (aset iR  STRATEGY 'BREADTH))
 
-(defn run-loaded-facts [path]
+(defn run-loaded-facts [iR path]
   "Load facts from path, assert all of them into working memory and run"
-  (run (read-string (slurp-with-comments path))))
+  (run iR (read-string (slurp-with-comments path))))
 
 (defn save-facts
   "Save all facts or facts of types to a file on a path in a format suitable to load"
-  ([path]
-   (save-facts :all path (mapcat fact-list (keys (aget iR TEMPL)))))
-  ([types path]
-   (save-facts :all path (mapcat fact-list types)))
-  ([types path facts]
+  ([iR path]
+   (save-facts iR :all path (mapcat #(fact-list iR %) (keys (aget iR TEMPL)))))
+  ([iR types path]
+   (save-facts iR :all path (mapcat #(fact-list iR %) types)))
+  ([iR types path facts]
    (let [ffs (map rest facts)]
      (with-open [^java.io.Writer w (writer path)]
        (.write w "(")
@@ -974,29 +972,33 @@
 
 (defn facts-with-slot-value
   "Returns list of facts with slot values for which (f slot-value value) = true"
-  ([slot f value]
-   (facts-with-slot-value :all slot f value (fact-list)))
-  ([typ slot f value]
-   (facts-with-slot-value typ slot f value (fact-list typ)))
-  ([typ slot f value facts]
+  ([iR slot f value]
+   (facts-with-slot-value iR :all slot f value (fact-list iR)))
+  ([iR typ slot f value]
+   (facts-with-slot-value iR typ slot f value (fact-list iR typ)))
+  ([iR typ slot f value facts]
    (filter #(f (slot-value slot %) value) facts)))
 
-(defn only-load-facts [path]
+(defn only-load-facts [iR path]
   "Load facts from path and assert all of them into working memory"
   (doseq [fact (read-string (slurp-with-comments path))]
-    (assert-frame fact)))
+    (assert-frame iR fact)))
     
 (defn create-rete-image
   "Creates RETE from templates and rules and set all necessary constants describing RETE and facts (and funcs)"
   ([temps rules facts]
-   (create-rete temps (filter some? (map trans-rule rules)))
-   (aset iR FACTS (volatile! facts)))
+   (let [iR (create-rete temps (filter some? (map trans-rule rules)))]
+     (aset iR FACTS (volatile! facts))))
   ([temps rules facts funcs]
    (let [ons (ns-name *ns*)]
     (eval (cons 'do funcs))
     (in-ns ons)
     (create-rete-image temps rules facts))))
-  
+    
+(defn clone-rete-image [image]
+  (let [cpi (java.util.Arrays/copyOf image (count image))]
+    (reset cpi)
+    cpi))  
     
 (defn get-rete-image []
   "Returns a vector of all necessary constants describing RETE and facts"
@@ -1005,7 +1007,7 @@
 (defn set-rete-image [image]
   "Set values of all necessary constants describing RETE and facts from the vector"
   (def iR image))
-
+  
 (defn tst [path trace tlong step1]
   (def TRACE trace)
   (def TLONG tlong)
@@ -1017,8 +1019,12 @@
   (if (seq fun)
     (create-rete-image tmp rls fct fun)
     (create-rete-image tmp rls fct))
+  (def cri (clone-rete-image iR))  
   (if (not step1)
-    (run)))
+    (run iR))
+  (def iR cri)
+  (if (not step1)
+    (run iR)))
 
 ;; The End
 
