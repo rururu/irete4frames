@@ -391,7 +391,7 @@
         bp (int ?basepoint)
         frm (list 'junct 'p1 p1 'p2 p2 'p3 p3
           'base-point bp 'type ?type)]
-    (irete.core/assert-frame frm)))
+    (rete.core/assert-frame frm)))
 )
 (facts
 (line p1 122 p2 107)
